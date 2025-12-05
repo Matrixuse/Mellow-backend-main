@@ -7,16 +7,44 @@ const mongoose = require('mongoose');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize MongoDB connection synchronously at startup
-if (process.env.MONGO_URI) {
-    mongoose.connect(process.env.MONGO_URI)
-        .then(() => {
-            console.log(`MongoDB Atlas Connected: ${mongoose.connection.host}`);
-        })
-        .catch(err => {
-            console.error(`Error connecting to MongoDB: ${err.message}`);
-        });
+// Initialize MongoDB connection with optional in-memory fallback for development
+async function initMongo() {
+    try {
+        let mongoUri = process.env.MONGO_URI;
+
+        // If no MONGO_URI is provided, try to start an in-memory MongoDB (dev convenience)
+        if (!mongoUri) {
+            try {
+                const { MongoMemoryServer } = require('mongodb-memory-server');
+                const mongod = await MongoMemoryServer.create();
+                mongoUri = mongod.getUri();
+                console.log('Started in-memory MongoDB for development');
+
+                // Stop in-memory server on exit signals
+                const stopHandler = async () => {
+                    try { await mongod.stop(); } catch (e) { /* ignore */ }
+                    process.exit(0);
+                };
+                process.on('SIGINT', stopHandler);
+                process.on('SIGTERM', stopHandler);
+                process.on('exit', stopHandler);
+            } catch (err) {
+                console.warn('mongodb-memory-server not installed; set MONGO_URI to connect to MongoDB. Skipping in-memory MongoDB.');
+            }
+        }
+
+        if (mongoUri) {
+            await mongoose.connect(mongoUri);
+            console.log(`MongoDB Connected: ${mongoose.connection.host}`);
+        } else {
+            console.warn('No MongoDB connection configured. Protected routes will return DB errors.');
+        }
+    } catch (err) {
+        console.error(`Error connecting to MongoDB: ${err && err.message ? err.message : err}`);
+    }
 }
+
+initMongo();
 
 // Load routes AFTER mongoose module is initialized
 const authRoutes = require('./routes/auth');
