@@ -9,8 +9,13 @@ const {
     deletePlaylist,
     addSongToPlaylist,
     removeSongFromPlaylist,
-    reorderPlaylistSongs
+    reorderPlaylistSongs,
+    togglePlaylistVisibility,
+    searchPublicPlaylists
 } = require('../controllers/playlistController');
+
+// Public search endpoint - no auth required
+router.get('/search/public', searchPublicPlaylists);
 
 // All playlist routes are protected
 router.use(protect);
@@ -21,6 +26,7 @@ router.get('/', getUserPlaylists);
 router.get('/:id', getPlaylistById);
 router.put('/:id', updatePlaylist);
 router.delete('/:id', deletePlaylist);
+router.patch('/:id/toggle-visibility', togglePlaylistVisibility);
 
 // Playlist song management
 router.post('/:id/songs', addSongToPlaylist);

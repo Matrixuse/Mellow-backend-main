@@ -339,6 +339,121 @@ const reorderPlaylistSongs = async (req, res) => {
     return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
+// Toggle playlist visibility (public/private)
+const togglePlaylistVisibility = async (req, res) => {
+    const playlistId = req.params.id;
+    const userId = req.user.id;
+    if (requireMongoOrFail(res)) return;
+
+    if (Playlist) {
+        try {
+            const pl = await Playlist.findOne({ _id: playlistId, userId: userId });
+            if (!pl) return res.status(404).json({ message: 'Playlist not found' });
+
+            pl.isPublic = !pl.isPublic;
+            await pl.save();
+
+            return res.json({ 
+                message: `Playlist is now ${pl.isPublic ? 'public' : 'private'}`,
+                isPublic: pl.isPublic
+            });
+        } catch (err) {
+            console.error('Error toggling playlist visibility (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to toggle playlist visibility' });
+        }
+    }
+
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
+};
+
+// Search public playlists by name or keywords
+const searchPublicPlaylists = async (req, res) => {
+    const query = req.query.q || '';
+    if (!query.trim()) {
+        return res.json([]);
+    }
+
+    if (requireMongoOrFail(res)) return;
+
+    if (Playlist) {
+        try {
+            const searchRegex = new RegExp(query, 'i');
+            
+            // First, search by playlist name/description
+            const playlistsByName = await Playlist.find({
+                isPublic: true,
+                $or: [
+                    { name: searchRegex },
+                    { description: searchRegex }
+                ]
+            })
+            .populate({ path: 'songs.song', select: 'title artist coverUrl' })
+            .lean();
+
+            console.log(`searchPublicPlaylists: query='${query}', playlistsByName=${playlistsByName.length}`);
+
+            // Then search by song content if Song model is available
+            let playlistsBySongs = [];
+            try {
+                if (Song) {
+                    const matchingSongs = await Song.find({
+                        $or: [
+                            { title: searchRegex },
+                            { artist: searchRegex }
+                        ]
+                    }).select('_id').lean();
+                    console.log(`searchPublicPlaylists: matchingSongs=${matchingSongs.length}`);
+                    
+                    if (matchingSongs && matchingSongs.length > 0) {
+                        const matchingSongIds = matchingSongs.map(d => d._id);
+                        console.log('searchPublicPlaylists: matchingSongIds=', matchingSongIds.slice(0,10));
+                        playlistsBySongs = await Playlist.find({
+                            isPublic: true,
+                            'songs.song': { $in: matchingSongIds }
+                        })
+                        .populate({ path: 'songs.song', select: 'title artist coverUrl' })
+                        .lean();
+                        console.log(`searchPublicPlaylists: playlistsBySongs=${playlistsBySongs.length}`);
+                    }
+                }
+            } catch (songErr) {
+                console.error('Error searching songs:', songErr);
+                // Continue without song search if it fails
+            }
+
+            // Combine and deduplicate playlists (using Map to avoid duplicates)
+            const allPlaylists = [...playlistsByName, ...playlistsBySongs];
+            const uniquePlaylists = Array.from(new Map(allPlaylists.map(pl => [String(pl._id), pl])).values());
+
+            const mapped = uniquePlaylists.slice(0, 10).map(pl => {
+                let coverUrl = null;
+                if (pl.songs && pl.songs.length > 0 && pl.songs[0].song && pl.songs[0].song.coverUrl) {
+                    coverUrl = pl.songs[0].song.coverUrl;
+                }
+                return {
+                    id: pl._id,
+                    name: pl.name,
+                    description: pl.description,
+                    isPublic: true,
+                    songCount: (pl.songs || []).length,
+                    coverUrl: coverUrl,
+                    createdAt: pl.createdAt,
+                    updatedAt: pl.updatedAt,
+                    owner: 'Unknown'
+                };
+            });
+
+            return res.json(mapped);
+        } catch (err) {
+            console.error('Error searching public playlists (Mongo):', err.message, err.stack);
+            return res.status(500).json({ message: 'Failed to search playlists: ' + err.message });
+        }
+    }
+
+
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
+};
+
 module.exports = {
     createPlaylist,
     getUserPlaylists,
@@ -347,5 +462,7 @@ module.exports = {
     deletePlaylist,
     addSongToPlaylist,
     removeSongFromPlaylist,
-    reorderPlaylistSongs
+    reorderPlaylistSongs,
+    togglePlaylistVisibility,
+    searchPublicPlaylists
 };

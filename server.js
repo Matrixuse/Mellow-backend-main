@@ -55,7 +55,7 @@ const playlistRoutes = require('./routes/playlists');
 // CORS ko theek kiya gaya hai taaki mobile app se bhi request aa sake
 const corsOptions = {
     origin: '*', // Sabhi origins se request allow karega
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
 };
 app.use(cors(corsOptions));
