@@ -106,6 +106,19 @@ const getPlaylistById = async (req, res) => {
                 return res.status(403).json({ message: 'Forbidden: you do not have access to this playlist' });
             }
 
+            // Determine if the current user has favorited this playlist
+            let isFavorite = false;
+            try {
+                const User = require('../models/User');
+                const userDoc = await User.findById(userId).select('favoritePlaylists');
+                if (userDoc && Array.isArray(userDoc.favoritePlaylists)) {
+                    isFavorite = userDoc.favoritePlaylists.some(favId => String(favId) === String(pl._id));
+                }
+            } catch (favErr) {
+                // ignore errors here - favorite status is not critical
+                console.error('Error checking favorite status:', favErr);
+            }
+
             // Map songs into expected shape (parse artist/moods similar to SQLite path)
             const songsWithParsedData = (pl.songs || []).map(item => {
                 const song = item.song || {};
@@ -135,7 +148,10 @@ const getPlaylistById = async (req, res) => {
                 createdAt: pl.createdAt,
                 updatedAt: pl.updatedAt,
                 songs: songsWithParsedData,
-                songCount: songsWithParsedData.length
+                songCount: songsWithParsedData.length,
+                owner: pl.userId ? String(pl.userId) : null,
+                ownerName: pl.userId && pl.userId.name ? pl.userId.name : null,
+                isFavorite
             });
         } catch (err) {
             console.error('Error fetching playlist (Mongo):', err);

@@ -103,13 +103,23 @@ const getSongs = async (req, res) => {
 
     try {
         const docs = await SongModel.find({}).sort({ createdAt: -1 }).lean().exec();
+        let favIds = [];
+        if (req.user && req.user.id) {
+            const User = require('../models/User');
+            const userDoc = await User.findById(req.user.id).select('favoriteSongs');
+            if (userDoc && Array.isArray(userDoc.favoriteSongs)) {
+                favIds = userDoc.favoriteSongs.map(id => String(id));
+            }
+        }
+
         const mapped = docs.map(doc => ({
             id: doc._id,
             title: doc.title,
             artist: doc.artist,
             songUrl: doc.songUrl,
             coverUrl: doc.coverUrl,
-            moods: doc.moods || []
+            moods: doc.moods || [],
+            isFavorite: favIds.includes(String(doc._id))
         }));
         res.status(200).json(mapped);
     } catch (err) {

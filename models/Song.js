@@ -9,4 +9,7 @@ const SongSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+// text index for efficient search-as-you-type
+SongSchema.index({ title: 'text', artist: 'text' });
+
 module.exports = mongoose.models.Song || mongoose.model('Song', SongSchema);

@@ -50,6 +50,14 @@ initMongo();
 const authRoutes = require('./routes/auth');
 const songRoutes = require('./routes/songs');
 const playlistRoutes = require('./routes/playlists');
+// new search endpoint
+const searchRoutes = require('./routes/search');
+// new favorites endpoint
+const favoritesRoutes = require('./routes/favorites');
+// user-related controllers
+const userController = require('./controllers/userController');
+const recommendationsRoutes = require('./routes/recommendations');
+const usersRoutes = require('./routes/users');
 
 // --- YAHAN BADLAAV KIYA GAYA HAI ---
 // CORS ko theek kiya gaya hai taaki mobile app se bhi request aa sake
@@ -85,6 +93,24 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/songs', songRoutes);
 app.use('/api/playlists', playlistRoutes);
+// search-as-you-type
+app.use('/api/search', searchRoutes);
+// favorites
+app.use('/api/favorites', favoritesRoutes);
+
+// recommendations
+app.use('/api/recommendations', recommendationsRoutes);
+
+// user features (history, follow, feed, profile, etc.)
+app.use('/api/users', usersRoutes);
+// explicitly also register pin route to avoid any import/casing issues
+app.post('/api/users/pin-playlist', require('./middleware/authMiddleware').protect, userController.togglePinPlaylist);
+app.post('/api/users/history', require('./middleware/authMiddleware').protect, userController.addListenHistory);
+app.post('/api/users/:id/follow', require('./middleware/authMiddleware').protect, userController.followUser);
+app.post('/api/users/:id/unfollow', require('./middleware/authMiddleware').protect, userController.unfollowUser);
+app.get('/api/users/following', require('./middleware/authMiddleware').protect, userController.getFollowing);
+app.get('/api/users/feed', require('./middleware/authMiddleware').protect, userController.getFeed);
+app.get('/api/users/:id/profile', require('./middleware/authMiddleware').protect, userController.getUserProfile);
 
 // Test route
 app.get('/', (req, res) => {
