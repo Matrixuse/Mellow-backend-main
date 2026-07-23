@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const { getSongs, uploadSong } = require('../controllers/songController');
+const { getSongs, uploadSong, updateSongDuration, updateSongDurations } = require('../controllers/songController');
 // Use the standard protect middleware for authenticated routes
 const { protect } = require('../middleware/authMiddleware');
 
@@ -10,6 +10,12 @@ const upload = multer({ storage: storage });
 
 // Route to get all songs for a logged-in user (protected)
 router.get('/', protect, getSongs);
+
+// Route to update a specific song's duration (frontend sends duration after audio loads)
+router.post('/update-duration', protect, updateSongDuration);
+
+// Route to update durations for all songs (admin/protected)
+router.post('/update-durations', protect, updateSongDurations);
 
 // Route to upload a song (authenticated users)
 router.post('/upload', 
