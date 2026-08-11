@@ -1,5 +1,7 @@
-const cloudinary = require('cloudinary').v2;
-const stream = require('stream');
+const crypto = require('crypto');
+const path = require('path');
+const mm = require('music-metadata');
+const { uploadFileToB2, getSignedUrlForKey } = require('../lib/backblaze');
 
 // If MONGO_URI is present we prefer using MongoDB (Mongoose) for songs
 let SongModel = null;
@@ -11,48 +13,38 @@ try {
     // ignore if model cannot be loaded
 }
 
-cloudinary.config({ 
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME, 
-  api_key: process.env.CLOUDINARY_API_KEY, 
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true
-});
+const createB2ObjectKey = (folder, originalName) => {
+    const ext = path.extname(originalName) || '';
+    const baseName = path.basename(originalName, ext)
 
-const uploadFileToCloudinary = (fileBuffer, options) => {
-    return new Promise((resolve, reject) => {
-        const uploadStream = cloudinary.uploader.upload_stream(options, (error, result) => {
-            if (error) { return reject(error); }
-            resolve(result);
-        });
-        const bufferStream = new stream.PassThrough();
-        bufferStream.end(fileBuffer);
-        bufferStream.pipe(uploadStream);
-    });
+        .replace(/[^a-zA-Z0-9._-]+/g, '_')
+        .slice(0, 120);
+    const randomHash = crypto.randomBytes(6).toString('hex');
+    return `${folder}/${Date.now()}-${randomHash}-${baseName}${ext}`;
 };
 
-const extractCloudinaryPublicId = (songUrl) => {
-    if (!songUrl) return null;
-    const match = String(songUrl).match(/\/upload\/(?:v\d+\/)?(.+?)\.[^./]+(?:\?.*)?$/);
-    return match ? match[1] : null;
+const getFileContentType = (file, defaultType) => {
+    const mimeType = file?.mimetype || '';
+    const ext = file?.originalname ? path.extname(file.originalname).toLowerCase() : '';
+
+    if (ext === '.mp3') return 'audio/mpeg';
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.png') return 'image/png';
+    if (ext === '.webp') return 'image/webp';
+    if (mimeType) return mimeType;
+    return defaultType || 'application/octet-stream';
 };
 
-const getDurationFromCloudinary = async (songUrl) => {
-    const publicId = extractCloudinaryPublicId(songUrl);
-    if (!publicId) return 0;
-    const resourceTypes = ['video', 'raw'];
-    for (const resourceType of resourceTypes) {
+const resolveSignedUrl = async (doc, keyField, fallbackUrl) => {
+    if (doc && doc[keyField]) {
         try {
-            const resource = await cloudinary.api.resource(publicId, { resource_type: resourceType });
-            if (resource && typeof resource.duration === 'number' && resource.duration > 0) {
-                return resource.duration;
-            }
+            return await getSignedUrlForKey(doc[keyField]);
         } catch (err) {
-            if (resourceType === 'raw') {
-                console.warn('Cloudinary duration lookup failed for resource types video/raw:', err && err.message);
-            }
+            console.warn(`Failed to generate signed URL for ${keyField}:`, err && err.message);
+            return null;
         }
     }
-    return 0;
+    return fallbackUrl || null;
 };
 
 const getDurationFromRemoteAudio = async (songUrl) => {
@@ -70,8 +62,6 @@ const getDurationFromRemoteAudio = async (songUrl) => {
     }
     return 0;
 };
-
-const mm = require('music-metadata');
 
 const uploadSong = async (req, res) => {
     try {
@@ -107,13 +97,18 @@ const uploadSong = async (req, res) => {
             console.warn('Failed to parse audio metadata for duration:', e && e.message);
         }
 
+        const audioKey = createB2ObjectKey('songs', songFile[0].originalname);
+        const coverKey = createB2ObjectKey('covers', coverFile[0].originalname);
+        const songContentType = getFileContentType(songFile[0], 'audio/mpeg');
+        const coverContentType = getFileContentType(coverFile[0], 'application/octet-stream');
+
         const [songUploadResult, coverUploadResult] = await Promise.all([
-            uploadFileToCloudinary(songFile[0].buffer, { resource_type: 'video', folder: 'music_app_songs' }),
-            uploadFileToCloudinary(coverFile[0].buffer, { resource_type: 'image', folder: 'music_app_covers' })
+            uploadFileToB2({ buffer: songFile[0].buffer, key: audioKey, contentType: songContentType }),
+            uploadFileToB2({ buffer: coverFile[0].buffer, key: coverKey, contentType: coverContentType })
         ]);
 
-        const songUrl = songUploadResult.secure_url;
-        const coverUrl = coverUploadResult.secure_url;
+        const songUrl = songUploadResult.objectUrl;
+        const coverUrl = coverUploadResult.objectUrl;
         
         // Require MongoDB; do not fall back to SQLite anymore
         if (!SongModel) {
@@ -125,17 +120,20 @@ const uploadSong = async (req, res) => {
             const songDoc = await SongModel.create({
                 title,
                 artist: artistsArray,
+                audioKey,
+                coverKey,
                 songUrl,
                 coverUrl,
                 moods: moodsArray,
                 duration: durationSeconds,
             });
+
             return res.status(201).json({
                 id: songDoc._id,
                 title: songDoc.title,
                 artist: songDoc.artist,
-                songUrl: songDoc.songUrl,
-                coverUrl: songDoc.coverUrl,
+                songUrl: await resolveSignedUrl(songDoc, 'audioKey', songDoc.songUrl),
+                coverUrl: await resolveSignedUrl(songDoc, 'coverKey', songDoc.coverUrl),
                 moods: songDoc.moods,
                 duration: songDoc.duration,
             });
@@ -169,18 +167,26 @@ const getSongs = async (req, res) => {
 
         const mapped = await Promise.all(docs.map(async (doc) => {
             let duration = Number(doc.duration) || 0;
-            if (!duration && doc.songUrl) {
-                duration = await getDurationFromCloudinary(doc.songUrl);
+            let songUrl = doc.songUrl || null;
+            let coverUrl = doc.coverUrl || null;
+
+            if (doc.audioKey) {
+                const signedSongUrl = await resolveSignedUrl(doc, 'audioKey', null);
+                songUrl = signedSongUrl || songUrl;
             }
-            if (!duration && doc.songUrl) {
-                duration = await getDurationFromRemoteAudio(doc.songUrl);
+            if (doc.coverKey) {
+                const signedCoverUrl = await resolveSignedUrl(doc, 'coverKey', null);
+                coverUrl = signedCoverUrl || coverUrl;
             }
+
+            // Do not fetch remote audio metadata during every song list request.
+            // Use stored duration values, and update missing durations via the dedicated endpoint.
             return {
                 id: doc._id,
                 title: doc.title,
                 artist: doc.artist,
-                songUrl: doc.songUrl,
-                coverUrl: doc.coverUrl,
+                songUrl,
+                coverUrl,
                 moods: doc.moods || [],
                 duration: duration || 0,
                 isFavorite: favIds.includes(String(doc._id))
@@ -244,8 +250,9 @@ const updateSongDurations = async (req, res) => {
 
         let updated = 0;
         for (const doc of docs) {
-            if (doc.songUrl) {
-                const duration = await getDurationFromCloudinary(doc.songUrl);
+            const playableUrl = doc.audioKey ? await resolveSignedUrl(doc, 'audioKey', doc.songUrl) : doc.songUrl;
+            if (playableUrl) {
+                const duration = await getDurationFromRemoteAudio(playableUrl);
                 if (duration && duration > 0) {
                     doc.duration = duration;
                     await doc.save();
