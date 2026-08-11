@@ -61,6 +61,7 @@ const usersRoutes = require('./routes/users');
 
 // --- YAHAN BADLAAV KIYA GAYA HAI ---
 // CORS ko theek kiya gaya hai taaki mobile app se bhi request aa sake
+app.set('trust proxy', true);
 const corsOptions = {
     origin: '*', // Sabhi origins se request allow karega
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],

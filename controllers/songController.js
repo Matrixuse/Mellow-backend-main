@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const mm = require('music-metadata');
-const { uploadFileToB2, getSignedUrlForKey } = require('../lib/backblaze');
+const { uploadFileToB2, getSignedUrlForKey, streamFileFromB2 } = require('../lib/backblaze');
 
 // If MONGO_URI is present we prefer using MongoDB (Mongoose) for songs
 let SongModel = null;
@@ -33,6 +33,21 @@ const getFileContentType = (file, defaultType) => {
     if (ext === '.webp') return 'image/webp';
     if (mimeType) return mimeType;
     return defaultType || 'application/octet-stream';
+};
+
+const getBackendOrigin = (req) => {
+    if (process.env.BACKEND_PUBLIC_URL) {
+        return process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '');
+    }
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+    const host = req.get('host');
+    return `${proto}://${host}`;
+};
+
+const getStreamingUrl = (req, songId, type) => {
+    if (!req || !songId) return null;
+    const origin = getBackendOrigin(req);
+    return `${origin}/api/songs/${type}/${songId}`;
 };
 
 const resolveSignedUrl = async (doc, keyField, fallbackUrl) => {
@@ -132,8 +147,8 @@ const uploadSong = async (req, res) => {
                 id: songDoc._id,
                 title: songDoc.title,
                 artist: songDoc.artist,
-                songUrl: await resolveSignedUrl(songDoc, 'audioKey', songDoc.songUrl),
-                coverUrl: await resolveSignedUrl(songDoc, 'coverKey', songDoc.coverUrl),
+                songUrl: songDoc.audioKey ? getStreamingUrl(req, songDoc._id, 'stream') : songDoc.songUrl,
+                coverUrl: songDoc.coverKey ? getStreamingUrl(req, songDoc._id, 'cover') : songDoc.coverUrl,
                 moods: songDoc.moods,
                 duration: songDoc.duration,
             });
@@ -171,12 +186,10 @@ const getSongs = async (req, res) => {
             let coverUrl = doc.coverUrl || null;
 
             if (doc.audioKey) {
-                const signedSongUrl = await resolveSignedUrl(doc, 'audioKey', null);
-                songUrl = signedSongUrl || songUrl;
+                songUrl = getStreamingUrl(req, doc._id, 'stream');
             }
             if (doc.coverKey) {
-                const signedCoverUrl = await resolveSignedUrl(doc, 'coverKey', null);
-                coverUrl = signedCoverUrl || coverUrl;
+                coverUrl = getStreamingUrl(req, doc._id, 'cover');
             }
 
             // Do not fetch remote audio metadata during every song list request.
@@ -234,6 +247,80 @@ const updateSongDuration = async (req, res) => {
     }
 };
 
+// Stream an audio file through the backend to avoid direct B2 CORS failures
+const streamSong = async (req, res) => {
+    try {
+        if (!SongModel) {
+            return res.status(500).json({ message: 'Server not configured for MongoDB.' });
+        }
+        const songDoc = await SongModel.findById(req.params.id).lean().exec();
+        return streamResourceFromDoc(req, res, songDoc, 'audioKey', 'songUrl', 'audio/mpeg');
+    } catch (err) {
+        console.error('Stream song error:', err);
+        return res.status(500).json({ message: 'Failed to stream song.' });
+    }
+};
+
+const streamCover = async (req, res) => {
+    try {
+        if (!SongModel) {
+            return res.status(500).json({ message: 'Server not configured for MongoDB.' });
+        }
+        const songDoc = await SongModel.findById(req.params.id).lean().exec();
+        return streamResourceFromDoc(req, res, songDoc, 'coverKey', 'coverUrl', 'image/jpeg');
+    } catch (err) {
+        console.error('Stream cover error:', err);
+        return res.status(500).json({ message: 'Failed to stream cover image.' });
+    }
+};
+
+const streamResourceFromDoc = async (req, res, doc, keyField, fallbackUrlField, fallbackContentType) => {
+    if (!doc) {
+        return res.status(404).json({ message: 'Song not found.' });
+    }
+
+    const key = doc[keyField];
+    const fallbackUrl = doc[fallbackUrlField];
+    const rangeHeader = req.headers.range;
+
+    if (!key) {
+        if (fallbackUrl) {
+            return res.redirect(fallbackUrl);
+        }
+        return res.status(404).json({ message: 'Resource not found.' });
+    }
+
+    try {
+        const object = await streamFileFromB2(key, rangeHeader);
+        const contentType = object.ContentType || fallbackContentType || 'application/octet-stream';
+
+        if (rangeHeader) {
+            res.status(206);
+            if (object.ContentRange) {
+                res.setHeader('Content-Range', object.ContentRange);
+            }
+        }
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Accept-Ranges', 'bytes');
+        if (object.ContentLength) {
+            res.setHeader('Content-Length', object.ContentLength);
+        }
+        if (object.CacheControl) {
+            res.setHeader('Cache-Control', object.CacheControl);
+        }
+
+        const body = object.Body;
+        if (body && typeof body.pipe === 'function') {
+            return body.pipe(res);
+        }
+        return res.send(body);
+    } catch (err) {
+        console.error('Streaming error:', err);
+        return res.status(500).json({ message: 'Failed to stream resource.' });
+    }
+};
+
 // Update durations for all songs that have 0 or missing duration
 const updateSongDurations = async (req, res) => {
     if (!SongModel) {
@@ -250,7 +337,7 @@ const updateSongDurations = async (req, res) => {
 
         let updated = 0;
         for (const doc of docs) {
-            const playableUrl = doc.audioKey ? await resolveSignedUrl(doc, 'audioKey', doc.songUrl) : doc.songUrl;
+            const playableUrl = doc.audioKey ? getStreamingUrl(req, doc._id, 'stream') : doc.songUrl;
             if (playableUrl) {
                 const duration = await getDurationFromRemoteAudio(playableUrl);
                 if (duration && duration > 0) {
@@ -273,5 +360,5 @@ const updateSongDurations = async (req, res) => {
     }
 };
 
-module.exports = { getSongs, uploadSong, updateSongDuration, updateSongDurations };
+module.exports = { getSongs, uploadSong, updateSongDuration, updateSongDurations, streamSong, streamCover };
 
