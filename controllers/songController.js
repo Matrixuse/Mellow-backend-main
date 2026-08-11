@@ -35,6 +35,9 @@ const getFileContentType = (file, defaultType) => {
     return defaultType || 'application/octet-stream';
 };
 
+const CLOUDINARY_URL_PATTERN = /cloudinary\.com/i;
+const isLegacyCloudinaryUrl = (url) => typeof url === 'string' && CLOUDINARY_URL_PATTERN.test(url);
+
 const getBackendOrigin = (req) => {
     if (process.env.BACKEND_PUBLIC_URL) {
         return process.env.BACKEND_PUBLIC_URL.replace(/\/$/, '');
@@ -48,6 +51,17 @@ const getStreamingUrl = (req, songId, type) => {
     if (!req || !songId) return null;
     const origin = getBackendOrigin(req);
     return `${origin}/api/songs/${type}/${songId}`;
+};
+
+const resolvePlayableUrl = (req, doc, keyField, fallbackUrlField, type) => {
+    if (doc && doc[keyField]) {
+        return getStreamingUrl(req, doc._id, type);
+    }
+    const fallbackUrl = doc && doc[fallbackUrlField] ? String(doc[fallbackUrlField]) : null;
+    if (!fallbackUrl || isLegacyCloudinaryUrl(fallbackUrl)) {
+        return null;
+    }
+    return fallbackUrl;
 };
 
 const resolveSignedUrl = async (doc, keyField, fallbackUrl) => {
@@ -147,8 +161,8 @@ const uploadSong = async (req, res) => {
                 id: songDoc._id,
                 title: songDoc.title,
                 artist: songDoc.artist,
-                songUrl: songDoc.audioKey ? getStreamingUrl(req, songDoc._id, 'stream') : songDoc.songUrl,
-                coverUrl: songDoc.coverKey ? getStreamingUrl(req, songDoc._id, 'cover') : songDoc.coverUrl,
+                songUrl: resolvePlayableUrl(req, songDoc, 'audioKey', 'songUrl', 'stream'),
+                coverUrl: resolvePlayableUrl(req, songDoc, 'coverKey', 'coverUrl', 'cover'),
                 moods: songDoc.moods,
                 duration: songDoc.duration,
             });
@@ -182,15 +196,8 @@ const getSongs = async (req, res) => {
 
         const mapped = await Promise.all(docs.map(async (doc) => {
             let duration = Number(doc.duration) || 0;
-            let songUrl = doc.songUrl || null;
-            let coverUrl = doc.coverUrl || null;
-
-            if (doc.audioKey) {
-                songUrl = getStreamingUrl(req, doc._id, 'stream');
-            }
-            if (doc.coverKey) {
-                coverUrl = getStreamingUrl(req, doc._id, 'cover');
-            }
+            const songUrl = resolvePlayableUrl(req, doc, 'audioKey', 'songUrl', 'stream');
+            const coverUrl = resolvePlayableUrl(req, doc, 'coverKey', 'coverUrl', 'cover');
 
             // Do not fetch remote audio metadata during every song list request.
             // Use stored duration values, and update missing durations via the dedicated endpoint.
@@ -337,7 +344,7 @@ const updateSongDurations = async (req, res) => {
 
         let updated = 0;
         for (const doc of docs) {
-            const playableUrl = doc.audioKey ? getStreamingUrl(req, doc._id, 'stream') : doc.songUrl;
+            const playableUrl = doc.audioKey ? getStreamingUrl(req, doc._id, 'stream') : (isLegacyCloudinaryUrl(doc.songUrl) ? null : doc.songUrl);
             if (playableUrl) {
                 const duration = await getDurationFromRemoteAudio(playableUrl);
                 if (duration && duration > 0) {
