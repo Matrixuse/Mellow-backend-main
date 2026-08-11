@@ -3,8 +3,10 @@ const mongoose = require('mongoose');
 const SongSchema = new mongoose.Schema({
   title: { type: String, required: true },
   artist: { type: [String], default: [], required: true },
-  songUrl: { type: String, required: true },
-  coverUrl: { type: String, required: true },
+  audioKey: { type: String, default: null },
+  coverKey: { type: String, default: null },
+  songUrl: { type: String, default: null },
+  coverUrl: { type: String, default: null },
   moods: { type: [String], default: [] },
   // duration in seconds (float)
   duration: { type: Number, default: 0 },
