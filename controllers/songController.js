@@ -94,7 +94,7 @@ const getDurationFromRemoteAudio = async (songUrl) => {
 
 const uploadSong = async (req, res) => {
     try {
-        const { title, artist, moods } = req.body;
+        const { title, artist, moods, vibeTags } = req.body;
         const { songFile, coverFile } = req.files;
 
         if (!songFile || !coverFile || !title || !artist) {
@@ -113,6 +113,13 @@ const uploadSong = async (req, res) => {
             moodsArray = moods ? JSON.parse(moods) : [];
         } catch (e) {
             moodsArray = [];
+        }
+
+        let vibeTagsArray = [];
+        try {
+            vibeTagsArray = vibeTags ? JSON.parse(vibeTags) : [];
+        } catch (e) {
+            vibeTagsArray = [];
         }
         const moodsJsonString = JSON.stringify(moodsArray);
 
@@ -154,6 +161,7 @@ const uploadSong = async (req, res) => {
                 songUrl,
                 coverUrl,
                 moods: moodsArray,
+                vibeTags: vibeTagsArray,
                 duration: durationSeconds,
             });
 
@@ -164,6 +172,7 @@ const uploadSong = async (req, res) => {
                 songUrl: resolvePlayableUrl(req, songDoc, 'audioKey', 'songUrl', 'stream'),
                 coverUrl: resolvePlayableUrl(req, songDoc, 'coverKey', 'coverUrl', 'cover'),
                 moods: songDoc.moods,
+                vibeTags: songDoc.vibeTags,
                 duration: songDoc.duration,
             });
         } catch (err) {
@@ -208,6 +217,7 @@ const getSongs = async (req, res) => {
                 songUrl,
                 coverUrl,
                 moods: doc.moods || [],
+                vibeTags: doc.vibeTags || [],
                 duration: duration || 0,
                 isFavorite: favIds.includes(String(doc._id))
             };

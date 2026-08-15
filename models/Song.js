@@ -8,6 +8,7 @@ const SongSchema = new mongoose.Schema({
   songUrl: { type: String, default: null },
   coverUrl: { type: String, default: null },
   moods: { type: [String], default: [] },
+  vibeTags: { type: [String], default: [] },
   // duration in seconds (float)
   duration: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
